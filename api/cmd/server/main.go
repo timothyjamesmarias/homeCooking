@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -69,6 +70,10 @@ func runMigration(db *store.DB, up bool) error {
 
 	m, err := migrate.NewWithDatabaseInstance("file://migrations", "postgres", driver)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			slog.Info("no migrations found, skipping")
+			return nil
+		}
 		return fmt.Errorf("creating migration instance: %w", err)
 	}
 
