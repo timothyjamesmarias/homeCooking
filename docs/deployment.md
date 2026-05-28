@@ -23,6 +23,17 @@ The `deploy` user has SSH key auth only (no password). Sudo is scoped:
 on every rebuild. Without this, NixOS only sets passwords on first boot and
 ignores changes in subsequent rebuilds.
 
+## Image SHA Management
+
+Image SHAs are stored on the server at `/var/lib/deploy/<app-name>.sha`, not
+in git. The nix config reads from these files using `builtins.readFile`. This
+means:
+
+- Git never contains real SHAs — app nix files are purely structural
+- `git pull` on the server can never overwrite a deployed SHA
+- The deploy script writes the SHA file, then rebuilds
+- Rebuilds require `--impure` since the SHA files are outside the flake
+
 ## Adding a New App to the Server
 
 1. Copy `nixos-server/apps/_template.nix` to `apps/<app-name>.nix`
@@ -40,21 +51,26 @@ ignores changes in subsequent rebuilds.
    ```nix
    "my-app/database-password" = {
      owner = "root";
-     restartUnits = [ "db-passwords.service" "my-app-env.service" "docker-my-app.service" ];
+     restartUnits = [ "db-passwords.service" "my-app-env.service" ];
    };
    ```
 6. Import in `configuration.nix`
 7. Add DNS record in Cloudflare pointing to the server
-8. Push config, pull on server, rebuild:
+8. Create the initial SHA file on the server:
+   ```bash
+   sudo mkdir -p /var/lib/deploy
+   echo -n "sha256:<digest>" | sudo tee /var/lib/deploy/my-app.sha
    ```
-   sudo nixos-rebuild switch --flake ~/nixos-server#server
+9. Push config, pull on server, rebuild:
+   ```bash
+   sudo nixos-rebuild switch --impure --flake ~/nixos-server#server
    ```
 
 Database passwords are fully automated:
 - `db-passwords` service reads passwords from sops and runs `ALTER USER` on every rebuild
 - `pgbouncer-auth` regenerates the auth file after passwords are set
 - App env services generate `DATABASE_URL` from sops
-- sops `restartUnits` ensures all of the above re-run when a secret changes
+- sops `restartUnits` ensures the above re-run when a secret changes
 
 ## CI/CD Pipeline
 
@@ -70,8 +86,8 @@ Pipeline steps:
 1. Builds Docker image from `api/` directory
 2. Pushes to GHCR with version + sha tags
 3. SSHs into server, runs `deploy.sh home-cooking <digest>`
-4. `deploy.sh` updates the image SHA in the NixOS app config and runs
-   `nixos-rebuild switch`
+4. `deploy.sh` writes the SHA to `/var/lib/deploy/home-cooking.sha` and
+   runs `nixos-rebuild switch --impure`
 
 ### Required GitHub Secrets
 
@@ -79,6 +95,16 @@ Pipeline steps:
 - `SERVER_USER` — `deploy`
 - `SERVER_SSH_KEY` — deploy user's SSH private key (must include BEGIN/END
   headers and preserve newlines when pasting into GitHub)
+
+## Deploy Script
+
+The deploy script (`nixos-server/scripts/deploy.sh`) handles:
+- Writing the image SHA to `/var/lib/deploy/<app>.sha`
+- Resetting any previous container failure state
+- Rebuilding with `--impure` to read the SHA files
+- Waiting for the container to start (30s timeout)
+- Hitting the `/health` endpoint to verify the app is routable
+- Printing container logs on failure for CI visibility
 
 ## Troubleshooting
 
@@ -117,12 +143,6 @@ golang-migrate's file source driver chokes on non-SQL files (e.g. `.gitkeep`).
 The Dockerfile strips non-SQL files from the migrations directory. The server
 also skips migrations entirely if no `.sql` files are found.
 
-### Deploy script updated SHA but container still runs old image
-
-The deploy script modifies the nix file on the server via `sed` and rebuilds.
-If the container was already crash-looping, the rebuild may not reset the
-failure counter. Use `systemctl reset-failed` as described above.
-
 ### sops passwords not applying
 
 - `users.mutableUsers` must be `false` or NixOS won't overwrite existing
@@ -130,15 +150,6 @@ failure counter. Use `systemctl reset-failed` as described above.
 - Secrets with `neededForUsers = true` go to `/run/secrets-for-users/`,
   not `/run/secrets/`
 - Verify sops decryption: `sops -d secrets/secrets.yaml | grep <key>`
-
-## Deploy Script
-
-The deploy script (`nixos-server/scripts/deploy.sh`) handles:
-- Resetting any previous container failure state
-- Updating the image SHA and rebuilding
-- Waiting for the container to start (30s timeout)
-- Hitting the `/health` endpoint to verify the app is routable
-- Printing container logs on failure for CI visibility
 
 ## Local Development
 
