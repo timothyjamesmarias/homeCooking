@@ -83,7 +83,7 @@ func runMigration(db *store.DB, up bool) error {
 		err = m.Steps(-1)
 	}
 
-	if err != nil && err != migrate.ErrNoChange {
+	if err != nil && err != migrate.ErrNoChange && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("running migration: %w", err)
 	}
 

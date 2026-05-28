@@ -21,6 +21,7 @@ WORKDIR /app
 
 COPY --from=builder /app/server .
 COPY --from=builder /app/migrations/ migrations/
+RUN find migrations/ -type f ! -name '*.sql' -delete 2>/dev/null; true
 
 RUN chown -R app:app /app
 
