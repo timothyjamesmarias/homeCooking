@@ -1,12 +1,12 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -63,6 +63,12 @@ func main() {
 }
 
 func runMigration(db *store.DB, up bool) error {
+	entries, err := filepath.Glob("migrations/*.sql")
+	if err != nil || len(entries) == 0 {
+		slog.Info("no migrations found, skipping")
+		return nil
+	}
+
 	driver, err := postgres.WithInstance(db.SqlDB(), &postgres.Config{})
 	if err != nil {
 		return fmt.Errorf("creating migration driver: %w", err)
@@ -70,10 +76,6 @@ func runMigration(db *store.DB, up bool) error {
 
 	m, err := migrate.NewWithDatabaseInstance("file://migrations", "postgres", driver)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			slog.Info("no migrations found, skipping")
-			return nil
-		}
 		return fmt.Errorf("creating migration instance: %w", err)
 	}
 
@@ -83,7 +85,7 @@ func runMigration(db *store.DB, up bool) error {
 		err = m.Steps(-1)
 	}
 
-	if err != nil && err != migrate.ErrNoChange && !errors.Is(err, os.ErrNotExist) {
+	if err != nil && err != migrate.ErrNoChange {
 		return fmt.Errorf("running migration: %w", err)
 	}
 
